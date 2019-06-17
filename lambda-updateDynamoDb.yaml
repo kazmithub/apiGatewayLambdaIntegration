@@ -1,0 +1,161 @@
+Resources:  
+
+  cinemaTable:
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      AttributeDefinitions:
+      - AttributeName: 'customerId'
+        AttributeType: 'S'
+      TableName: 'customers'
+      KeySchema: 
+        - AttributeName: 'customerId'
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: '1'
+        WriteCapacityUnits: '1'
+
+  lambdaRole: 
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        -  arn:aws:iam::aws:policy/AWSLambdaFullAccess
+        -  arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+        -  arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AmazonAPIGatewayAdministrator
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+            - "sts:AssumeRole"
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+      RoleName: AhsanLambdaRole
+
+  lambdaFunctionPost:
+    DependsOn: cinemaTable
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: posts a query into dynamodb table.
+      Handler: index.lambda_handler
+      Role: !GetAtt lambdaRole.Arn
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import json
+          import decimal 
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table('customers')
+
+          def lambda_handler(event, context):
+              response = table.put_item(
+              Item=(event)
+          )
+      Timeout: 30
+      Runtime: python3.6
+
+  lambdaFunctionGet:
+    DependsOn: cinemaTable
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Gets value from the dynamodb table.
+      Handler: index.lambda_handler
+      Role: !GetAtt lambdaRole.Arn
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import json
+          import decimal 
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table('customers')
+
+          def lambda_handler(event, context):
+            custId = event['custId']
+            response = table.get_item (Key={
+              'customerId': custId})
+            return response ['Item']
+      Timeout: 30
+      Runtime: python3.6
+
+  lambdaApiGatewayInvoke:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt "lambdaFunctionPost.Arn"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${myApiGateway}/*/POST/foo"
+
+  lambdaApiGatewayInvoke2:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt "lambdaFunctionGet.Arn"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${myApiGateway}/*/GET/foo"
+
+  myApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: my-api
+      Description: My API
+
+  apiMethodGet:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: "NONE"
+      HttpMethod: "GET"
+      Integration:
+        IntegrationHttpMethod: "POST"
+        Type: "AWS"
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations"
+          - lambdaArn: !GetAtt lambdaFunctionGet.Arn
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates: {"application/json": ""}        
+        RequestTemplates: 
+          application/json: "{\"custId\": \"$input.params('customerId')\" }"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:  { "application/json": "Empty" }      
+      RequestParameters: 
+        method.request.querystring.customerId: true      
+      ResourceId: !Ref apiGatewayResource
+      RestApiId: !Ref "myApiGateway"
+
+  apiMethodPost:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: "POST"
+      Integration:
+        IntegrationHttpMethod: "POST"
+        Type: AWS
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt lambdaFunctionPost.Arn
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates: {"application/json": ""}
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:  { "application/json": "Empty" }
+      ResourceId: !Ref apiGatewayResource
+      RestApiId: !Ref myApiGateway
+      RequestParameters:
+        method.request.querystring.fooId: true
+
+  apiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      ParentId: !GetAtt myApiGateway.RootResourceId
+      PathPart: foo
+      RestApiId: !Ref myApiGateway
+
+  ApiGatewayAccount: 
+    Type : 'AWS::ApiGateway::Account'
+    Properties: 
+      CloudWatchRoleArn: arn:aws:iam::853219876644:role/apiGatewayCloudWatchLogs
+
+  
